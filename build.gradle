@@ -20,13 +20,11 @@ loom {
 }
 
 dependencies {
-    // Fabric
-    minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    implementation "net.fabricmc:fabric-loader:${project.loader_version}"
-    implementation "net.fabricmc.fabric-api:fabric-api:${fabric_version}"
+    minecraft(libs.minecraft)
+    implementation(libs.fabric.loader)
+    implementation(libs.fabric.api)
 
-    // Meteor
-    implementation "meteordevelopment:meteor-client:${project.minecraft_version}-SNAPSHOT"
+    implementation(libs.meteor.client)
 }
 
 processResources {

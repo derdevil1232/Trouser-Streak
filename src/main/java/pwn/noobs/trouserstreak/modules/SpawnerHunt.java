@@ -1,9 +1,11 @@
 package pwn.noobs.trouserstreak.modules;
 
-import meteordevelopment.meteorclient.events.render.Render3DEvent;
+import meteordevelopment.orbit.EventHandler;
 import meteordevelopment.meteorclient.events.world.TickEvent;
+import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.pathing.BaritoneUtils;
 import meteordevelopment.meteorclient.pathing.PathManagers;
+import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import meteordevelopment.meteorclient.renderer.ShapeMode;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.ColorSetting;
@@ -19,7 +21,6 @@ import meteordevelopment.meteorclient.utils.player.InvUtils;
 import meteordevelopment.meteorclient.utils.render.RenderUtils;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
 import meteordevelopment.meteorclient.utils.world.BlockUtils;
-import meteordevelopment.orbit.EventHandler;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
@@ -32,6 +33,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.SpawnerBlockEntity;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 import pwn.noobs.trouserstreak.Trouser;
 
 import java.util.ArrayList;
@@ -116,9 +118,27 @@ public class SpawnerHunt extends Module {
         .build()
     );
 
+    private final Setting<Boolean> rtpWhenNoSpawners = sgAutomation.add(new BoolSetting.Builder()
+        .name("rtp-when-no-spawners")
+        .description("Automatically teleports to a random location when no matching spawners are detected.")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Integer> rtpChestSlot = sgAutomation.add(new IntSetting.Builder()
+        .name("rtp-chest-slot")
+        .description("The slot index of the chest in the RTP GUI to click. 0-indexed." +
+                "Use the dupersunited texturepack if unsure.")
+        .defaultValue(11)
+        .min(0)
+        .sliderMax(26)
+        .visible(rtpWhenNoSpawners::get)
+        .build()
+    );
+
     private final Setting<Boolean> exploreWhenNoSpawners = sgAutomation.add(new BoolSetting.Builder()
         .name("explore-when-no-spawners")
-        .description("Randomly explores until a matching spawner is detected.")
+        .description("Randomly explores until a matching spawner is detected. Prefer RTP when possible, as it is faster")
         .defaultValue(false)
         .build()
     );
@@ -161,7 +181,7 @@ public class SpawnerHunt extends Module {
 
     private final Setting<Boolean> box = sgRender.add(new BoolSetting.Builder()
         .name("box")
-        .description("Draws a 1x1x1 box around each matching spawner.")
+        .description("Draws a box around each matching spawner.")
         .defaultValue(true)
         .build()
     );
@@ -194,6 +214,7 @@ public class SpawnerHunt extends Module {
     private int pickupPathRefreshTicks;
     private int ticksSincePathRefresh;
     private int silkWarningCooldown;
+    private boolean isMoving;
 
     public SpawnerHunt() {
         super(Trouser.baseHunting, "SpawnerHunt", "Routes to and mines mob spawners filtered by mob type.");
@@ -222,6 +243,20 @@ public class SpawnerHunt extends Module {
             clearPickupVerification();
             stopOwnedPathing();
             return;
+        }
+        if (rtpCooldown > 0) rtpCooldown--;
+
+        if (waitingForRtpGui) {
+            handleRtpGui();
+        }
+
+        if (waitingForTeleport && rtpStartPos != null) {
+            double dist = mc.player.position().distanceTo(rtpStartPos);
+
+            if (dist > 50) {
+                waitingForTeleport = false;
+                info("RTP completed.");
+            }
         }
 
         if (silkWarningCooldown > 0) silkWarningCooldown--;
@@ -257,6 +292,12 @@ public class SpawnerHunt extends Module {
 
         if (matchingSpawners.isEmpty()) {
             currentTarget = null;
+
+            if (rtpWhenNoSpawners.get()) {
+                stopOwnedPathing();
+                rtpPlayer();
+                return;
+            }
 
             if (exploreWhenNoSpawners.get()) {
                 handleExploration();
@@ -360,6 +401,13 @@ public class SpawnerHunt extends Module {
         }
     }
 
+    private void isstuck() {
+        return;
+    }
+
+
+
+
     private BlockPos createRandomExploreTarget() {
         if (mc.player == null) return BlockPos.ZERO;
 
@@ -372,6 +420,60 @@ public class SpawnerHunt extends Module {
         int z = (int) Math.floor(mc.player.getZ() + Math.sin(angle) * distance);
 
         return new BlockPos(x, y, z);
+    }
+    private Vec3 rtpStartPos;
+
+    private boolean waitingForTeleport;
+
+
+
+    private boolean waitingForRtpGui;
+
+    private int rtpGuiWaitTicks;
+
+    private int rtpCooldown;
+
+    private int chestSlot;
+
+    private void handleRtpGui() {
+        if (mc.player == null) return;
+        if (mc.player.containerMenu == null) return;
+
+        // 1. Wait until the server actually opens the new GUI
+        if (mc.player.containerMenu == mc.player.inventoryMenu) return;
+
+        // 2. Ensure the GUI has enough slots
+        if (mc.player.containerMenu.slots.size() <= 27) return;
+
+        // 3. The GUI is open! Increment the tick counter.
+        rtpGuiWaitTicks++;
+
+        chestSlot = rtpChestSlot.get();
+
+        // 4. If we haven't waited 10 ticks yet, return and wait for the next tick.
+        if (rtpGuiWaitTicks < 10) return;
+
+        // 5. 10 ticks have passed, execute the click!
+        InvUtils.click().slotId(chestSlot);
+
+        // 6. Reset the states for the next time you RTP
+        waitingForRtpGui = false;
+        waitingForTeleport = true;
+        rtpGuiWaitTicks = 0;
+    }
+
+    private void rtpPlayer() {
+        if (rtpCooldown > 0) return;
+        if (waitingForRtpGui) return;
+        if (waitingForTeleport) return;
+        if (mc.player == null) return;
+
+        rtpStartPos = mc.player.position();
+
+        ChatUtils.sendPlayerMsg("/rtp");
+
+        waitingForRtpGui = true;
+        rtpCooldown = 100;
     }
 
     private void clearExploration() {
