@@ -231,6 +231,10 @@ public class SpawnerHunt extends Module {
         ticksSincePathRefresh = 0;
         silkWarningCooldown = 0;
         stopOwnedPathing();
+        firstStuckCheckPos = null;
+        stuckTimer = 0;
+        waitingForConfirmation = false;
+        playerIsStuck = false;
     }
 
     @EventHandler
@@ -248,6 +252,16 @@ public class SpawnerHunt extends Module {
 
         if (waitingForRtpGui) {
             handleRtpGui();
+        }
+        
+        if (PathManagers.get().isPathing()) {
+            handleStuckDetection();
+        } else {
+            resetStuckDetection();
+        }
+
+        if (playerIsStuck) {
+            doRecovery();
         }
 
         if (waitingForTeleport && rtpStartPos != null) {
@@ -401,11 +415,88 @@ public class SpawnerHunt extends Module {
         }
     }
 
-    private void isstuck() {
-        return;
+    
+    private static final int STUCK_CHECK_INTERVAL = 200;      // 10 seconds
+    private static final int STUCK_CONFIRM_INTERVAL = 100;    // 5 seconds
+    
+    private BlockPos firstStuckCheckPos;
+    private int stuckTimer;
+    private boolean recoveryMineRangeActive;
+    private boolean waitingForConfirmation;
+    private boolean playerIsStuck;
+
+    private void handleStuckDetection() {
+        if (mc.player == null) return;
+    
+        BlockPos currentPos = mc.player.blockPosition();
+    
+        stuckTimer++;
+    
+        // First check after 10 seconds
+        if (!waitingForConfirmation) {
+            if (stuckTimer >= STUCK_CHECK_INTERVAL) {
+                if (firstStuckCheckPos == null) {
+                    firstStuckCheckPos = currentPos.immutable();
+                } else {
+                    if (currentPos.equals(firstStuckCheckPos)) {
+                        // Same position after 10 seconds
+                        waitingForConfirmation = true;
+                        stuckTimer = 0;
+                    } else {
+
+                        firstStuckCheckPos = currentPos.immutable();
+                        stuckTimer = 0;
+                    
+                        disableRecovery();
+                    }
+                }
+            }
+        }
+    
+        // Confirmation check after another 5 seconds
+        else {
+            if (stuckTimer >= STUCK_CONFIRM_INTERVAL) {
+                if (currentPos.equals(firstStuckCheckPos)) {
+                    playerIsStuck = true;
+                
+                    Trouser.LOG.info("[SpawnerHunt] Player is stuck.");
+                
+                    doRecovery();
+                }
+    
+                waitingForConfirmation = false;
+                stuckTimer = 0;
+                firstStuckCheckPos = currentPos.immutable();
+            }
+        }
     }
 
 
+    private void doRecovery() {
+        if (recoveryMineRangeActive) return;
+    
+        recoveryMineRangeActive = true;
+    
+        Trouser.LOG.info("[SpawnerHunt] Recovery activated. Mine range temporarily increased to 4 blocks.");
+    }
+    
+    private void disableRecovery() {
+        if (!recoveryMineRangeActive) return;
+    
+        recoveryMineRangeActive = false;
+        playerIsStuck = false;
+    
+        Trouser.LOG.info("[SpawnerHunt] Recovery ended. Mine range restored.");
+    }
+    
+    private void resetStuckDetection() {
+        firstStuckCheckPos = null;
+        stuckTimer = 0;
+        waitingForConfirmation = false;
+        playerIsStuck = false;
+    
+        disableRecovery();
+    }
 
 
     private BlockPos createRandomExploreTarget() {
@@ -592,7 +683,7 @@ public class SpawnerHunt extends Module {
     }
 
     private boolean isWithinMineRange(BlockPos pos) {
-        double range = mineRange.get();
+        double range = recoveryMineRangeActive ? 4.0 : mineRange.get();
         return squaredDistanceTo(pos) <= range * range;
     }
 
